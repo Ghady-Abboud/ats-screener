@@ -10,16 +10,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type Education struct {
+	SchoolName string   `json:"school_name,omitempty"`
+	Degrees    []string `json:"degrees,omitempty"`
+	GPA        string   `json:"gpa,omitempty"`
+	Courses    []string `json:"courses,omitempty"`
+}
+
 type Resume struct {
-	Name          string   `json:"name"`
-	Email         string   `json:"email"`
-	PhoneNumber   string   `json:"phone_number"`
-	ExternalLinks []string `json:"external_links,omitempty"`
-	Education     []string `json:"education,omitempty"`
-	Experience    []string `json:"experience,omitempty"`
-	Projects      []string `json:"projects,omitempty"`
-	Skills        []string `json:"skills,omitempty"`
-	Interests     []string `json:"interests,omitempty"`
+	Email         string    `json:"email,omitempty"`
+	PhoneNumber   string    `json:"phone_number,omitempty"`
+	ExternalLinks []string  `json:"external_links,omitempty"`
+	Experience    []string  `json:"experience,omitempty"`
+	Projects      []string  `json:"projects,omitempty"`
+	Skills        []string  `json:"skills,omitempty"`
+	Interests     []string  `json:"interests,omitempty"`
+	Education     Education `json:"education,omitempty"`
 }
 
 func uploadFile(c *gin.Context) {
@@ -44,8 +50,8 @@ func uploadFile(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
-		"file": file.Filename,
-		"data": resume,
+		"file":   file.Filename,
+		"data":   resume,
 	})
 }
 
