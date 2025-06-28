@@ -4,10 +4,23 @@ import (
 	"bytes"
 	"mime/multipart"
 	"net/http"
+	"regexp"
 
 	"github.com/dslipak/pdf"
 	"github.com/gin-gonic/gin"
 )
+
+type Resume struct {
+	Name          string   `json:"name"`
+	Email         string   `json:"email"`
+	PhoneNumber   string   `json:"phone_number"`
+	ExternalLinks []string `json:"external_links,omitempty"`
+	Education     []string `json:"education,omitempty"`
+	Experience    []string `json:"experience,omitempty"`
+	Projects      []string `json:"projects,omitempty"`
+	Skills        []string `json:"skills,omitempty"`
+	Interests     []string `json:"interests,omitempty"`
+}
 
 func uploadFile(c *gin.Context) {
 	file, err := c.FormFile("file")
@@ -15,7 +28,7 @@ func uploadFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	content, err := readFileContent(file)
+	content, err := readPDFContent(file)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -24,21 +37,30 @@ func uploadFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "File is empty or not a valid PDF"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": http.StatusText(http.StatusOK), "file": file.Filename})
+	resume, err := extractResumeData(content)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"file": file.Filename,
+		"data": resume,
+	})
 }
 
-func readFileContent(fileHeader *multipart.FileHeader) (string, error){
+func readPDFContent(fileHeader *multipart.FileHeader) (string, error) {
 	file, err := fileHeader.Open()
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
-	
+
 	reader, err := pdf.NewReader(file, fileHeader.Size)
 	if err != nil {
 		return "", err
 	}
-	
+
 	var buf bytes.Buffer
 	b, err := reader.GetPlainText()
 	if err != nil {
@@ -46,6 +68,20 @@ func readFileContent(fileHeader *multipart.FileHeader) (string, error){
 	}
 	buf.ReadFrom(b)
 	return buf.String(), nil
+}
+
+func extractResumeData(content string) (*Resume, error) {
+	resume := &Resume{}
+	emailRegex := `[a-zA-Z0-9-_]{1,}@[a-zA-Z0-9-_]{1,}.[a-zA-Z]{1,}`
+	phoneRegex := `\d{3}-\d{3}-\d{4}`
+
+	if phoneMatch := regexp.MustCompile(phoneRegex).FindString(content); phoneMatch != "" {
+		resume.PhoneNumber = phoneMatch
+	}
+	if emailMatch := regexp.MustCompile(emailRegex).FindAllString(content, -1); len(emailMatch) > 0 {
+		resume.Email = emailMatch[0]
+	}
+	return resume, nil
 }
 
 func main() {
