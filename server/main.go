@@ -12,8 +12,8 @@ import (
 
 type Education struct {
 	SchoolName string   `json:"school_name,omitempty"`
-	Degrees    []string `json:"degrees,omitempty"`
 	GPA        string   `json:"gpa,omitempty"`
+	Degrees    []string `json:"degrees,omitempty"`
 	Courses    []string `json:"courses,omitempty"`
 }
 
@@ -48,7 +48,7 @@ func uploadFile(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
+	c.IndentedJSON(http.StatusOK, gin.H{
 		"status": "success",
 		"file":   file.Filename,
 		"data":   resume,
