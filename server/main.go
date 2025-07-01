@@ -2,31 +2,42 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
-	"regexp"
-	"strings"
+	"os"
 
 	"github.com/dslipak/pdf"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+	"github.com/jpoz/groq"
 )
 
 type Education struct {
-	SchoolName []string `json:"school_name,omitempty"`
-	GPA        []string `json:"gpa,omitempty"`
-	Degrees    []string `json:"degrees,omitempty"`
-	Courses    []string `json:"courses,omitempty"`
+	SchoolName interface{} `json:"school_name,omitempty"`
+	GPA        interface{} `json:"gpa,omitempty"`
+	Degrees    interface{} `json:"degrees,omitempty"`
+	Courses    interface{} `json:"courses,omitempty"`
 }
 
 type Resume struct {
-	Email         string    `json:"email,omitempty"`
-	PhoneNumber   string    `json:"phone_number,omitempty"`
-	ExternalLinks []string  `json:"external_links,omitempty"`
-	Experience    []string  `json:"experience,omitempty"`
-	Projects      []string  `json:"projects,omitempty"`
-	Skills        []string  `json:"skills,omitempty"`
-	Interests     []string  `json:"interests,omitempty"`
-	Education     Education `json:"education,omitempty"`
+	Email         string      `json:"email,omitempty"`
+	PhoneNumber   string      `json:"phone_number,omitempty"`
+	ExternalLinks interface{} `json:"external_links,omitempty"`
+	Experience    interface{} `json:"experience,omitempty"`
+	Projects      interface{} `json:"projects,omitempty"`
+	Skills        interface{} `json:"skills,omitempty"`
+	Interests     interface{} `json:"interests,omitempty"`
+	Publications  interface{} `json:"publications,omitempty"`
+	Education     interface{} `json:"education,omitempty"`
+}
+
+func GroqMiddleware(client *groq.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set("groqClient", client)
+		c.Next()
+	}
 }
 
 func uploadFile(c *gin.Context) {
@@ -44,16 +55,58 @@ func uploadFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "File is empty or not a valid PDF"})
 		return
 	}
-	resume, err := extractResumeData(content)
+
+	clientInterface, exists := c.Get("groqClient")
+	if !exists {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Groq client not found"})
+		return
+	}
+
+	client, ok := clientInterface.(*groq.Client)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid Groq Client"})
+		return
+	}
+
+	systemPrompt := `Parse this resume and return ONLY a JSON object. Use arrays for: external_links, experience, projects, skills, interests, publications. For education use: school_name (string), gpa (string), degrees (array), courses (array). Return only JSON, no explanations. Resume: ` + content
+
+	response, err := client.CreateChatCompletion(groq.CompletionCreateParams{
+		Model:          "deepseek-r1-distill-llama-70b",
+		ResponseFormat: groq.ResponseFormat{Type: "json_object"},
+		Messages: []groq.Message{
+			{
+				Role:    "user",
+				Content: systemPrompt,
+			},
+		},
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	systemResponse := response.Choices[0].Message.Content
+	resume, err := JsonToResume(systemResponse)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	c.IndentedJSON(http.StatusOK, gin.H{
 		"status": "success",
 		"file":   file.Filename,
-		"data":   resume,
+		"resume": resume,
 	})
+}
+
+func JsonToResume(jsonData string) (*Resume, error) {
+	var resume Resume
+	err := json.Unmarshal([]byte(jsonData), &resume)
+	if err != nil {
+		fmt.Println("Error unmarshalling JSON: ", err)
+		return nil, err
+	}
+	return &resume, nil
+
 }
 
 func readPDFContent(fileHeader *multipart.FileHeader) (string, error) {
@@ -77,74 +130,12 @@ func readPDFContent(fileHeader *multipart.FileHeader) (string, error) {
 	return buf.String(), nil
 }
 
-func extractResumeData(content string) (*Resume, error) {
-	resume := &Resume{}
-	emailRegex := `[a-zA-Z0-9-_]{1,}@[a-zA-Z0-9-_]{1,}.[a-zA-Z]{1,}`
-	phoneRegex := `\d{3}-\d{3}-\d{4}`
-
-	if phoneMatch := regexp.MustCompile(phoneRegex).FindString(content); phoneMatch != "" {
-		resume.PhoneNumber = phoneMatch
-	}
-	if emailMatch := regexp.MustCompile(emailRegex).FindAllString(content, -1); len(emailMatch) > 0 {
-		resume.Email = emailMatch[0]
-	}
-	education := extractEducationData(content)
-	if len(education.SchoolName) > 0 {
-		resume.Education = education
-	}
-	return resume, nil
-}
-
-func extractEducationData(content string) Education {
-	education := Education{}
-	schoolRegex := `([A-Z][^\s,.]+[.]?\s[(]?)*(College|University|Institute|Law School|School of|Academy)[^,\d]*[?=,|\d]`
-	schoolMatches := regexp.MustCompile(schoolRegex).FindAllString(content, -1)
-	for _, match := range schoolMatches {
-		if len(match) > 2 && len(match) < 100 {
-			education.SchoolName = append(education.SchoolName, match)
-		}
-	}
-	gpa := extractGPA(content)
-	if len(gpa) > 0 {
-		education.GPA = gpa
-	}
-	return education
-}
-
-func extractGPA(content string) []string {
-	var gpas []string
-	seenGPAs := make(map[string]bool)
-
-	gpaPatterns := []string{
-		`(?i)gpa[\s:]*([0-4]\.[0-9]{1,2})\s*(?:/\s*4\.0)?`, 
-        `(?i)gpa[\s:]*([0-4]\.[0-9]{1,2})\s*/\s*([0-4]\.[0-9]{1,2})`, 
-        `(?i)cumulative\s+gpa[\s:]*([0-4]\.[0-9]{1,2})`,     
-        `(?i)overall\s+gpa[\s:]*([0-4]\.[0-9]{1,2})`,                
-	}
-	for _, pattern := range gpaPatterns {
-		re := regexp.MustCompile(pattern)
-		matches := re.FindAllStringSubmatch(content, -1)
-		for _, match := range matches {
-			if len(match) > 1 {
-				gpa := strings.TrimSpace(match[1])
-				if !seenGPAs[gpa] && isValidGPA(gpa) {
-					gpas = append(gpas, gpa)
-					seenGPAs[gpa] = true
-				}
-			}
-		}
-	}
-	return gpas
-}
-
-func isValidGPA(gpa string) bool {
-	if len(gpa) < 2 || len(gpa) > 4 {
-		return false
-	}
-	return true
-}
 func main() {
+	godotenv.Load()
 	router := gin.Default()
+	client := groq.NewClient(groq.WithAPIKey(os.Getenv("GROQ_API_KEY")))
+
+	router.Use(GroqMiddleware(client))
 	router.POST("/upload", uploadFile)
 
 	router.Run("localhost:8080")
