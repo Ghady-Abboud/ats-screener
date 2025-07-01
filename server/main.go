@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -14,21 +15,22 @@ import (
 )
 
 type Education struct {
-	SchoolName []string `json:"school_name,omitempty"`
-	GPA        []string `json:"gpa,omitempty"`
-	Degrees    []string `json:"degrees,omitempty"`
-	Courses    []string `json:"courses,omitempty"`
+	SchoolName interface{} `json:"school_name,omitempty"`
+	GPA        interface{} `json:"gpa,omitempty"`
+	Degrees    interface{} `json:"degrees,omitempty"`
+	Courses    interface{} `json:"courses,omitempty"`
 }
 
 type Resume struct {
-	Email         string    `json:"email,omitempty"`
-	PhoneNumber   string    `json:"phone_number,omitempty"`
-	ExternalLinks []string  `json:"external_links,omitempty"`
-	Experience    []string  `json:"experience,omitempty"`
-	Projects      []string  `json:"projects,omitempty"`
-	Skills        []string  `json:"skills,omitempty"`
-	Interests     []string  `json:"interests,omitempty"`
-	Education     Education `json:"education,omitempty"`
+	Email         string      `json:"email,omitempty"`
+	PhoneNumber   string      `json:"phone_number,omitempty"`
+	ExternalLinks interface{} `json:"external_links,omitempty"`
+	Experience    interface{} `json:"experience,omitempty"`
+	Projects      interface{} `json:"projects,omitempty"`
+	Skills        interface{} `json:"skills,omitempty"`
+	Interests     interface{} `json:"interests,omitempty"`
+	Publications  interface{} `json:"publications,omitempty"`
+	Education     interface{} `json:"education,omitempty"`
 }
 
 func GroqMiddleware(client *groq.Client) gin.HandlerFunc {
@@ -63,13 +65,14 @@ func uploadFile(c *gin.Context) {
 	client, ok := clientInterface.(*groq.Client)
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid Groq Client"})
+		return
 	}
 
-	systemPrompt := "You are a resume parser. You take text as input and return a JSON object with the following fields: email, phone_number, external_links, experience, projects, skills, interests, education. The education field should be an object with school_name, gpa, degrees, and courses as arrays of strings. The input text is: " + content
+	systemPrompt := `Parse this resume and return ONLY a JSON object. Use arrays for: external_links, experience, projects, skills, interests, publications. For education use: school_name (string), gpa (string), degrees (array), courses (array). Return only JSON, no explanations. Resume: ` + content
 
 	response, err := client.CreateChatCompletion(groq.CompletionCreateParams{
 		Model:          "deepseek-r1-distill-llama-70b",
-		ResponseFormat: groq.ResponseFormat{Type: "text"},
+		ResponseFormat: groq.ResponseFormat{Type: "json_object"},
 		Messages: []groq.Message{
 			{
 				Role:    "user",
@@ -81,13 +84,29 @@ func uploadFile(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	systemResponse := response.Choices[0].Message.Content
+	resume, err := JsonToResume(systemResponse)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
-	fmt.Println("Response: ", response.Choices[0].Message.Content)
 	c.IndentedJSON(http.StatusOK, gin.H{
 		"status": "success",
 		"file":   file.Filename,
-		"data":   content,
+		"resume": resume,
 	})
+}
+
+func JsonToResume(jsonData string) (*Resume, error) {
+	var resume Resume
+	err := json.Unmarshal([]byte(jsonData), &resume)
+	if err != nil {
+		fmt.Println("Error unmarshalling JSON: ", err)
+		return nil, err
+	}
+	return &resume, nil
+
 }
 
 func readPDFContent(fileHeader *multipart.FileHeader) (string, error) {
