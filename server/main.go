@@ -2,13 +2,15 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"mime/multipart"
 	"net/http"
-	"regexp"
-	"strings"
+	"os"
 
 	"github.com/dslipak/pdf"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+	"github.com/jpoz/groq"
 )
 
 type Education struct {
@@ -29,6 +31,13 @@ type Resume struct {
 	Education     Education `json:"education,omitempty"`
 }
 
+func GroqMiddleware(client *groq.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set("groqClient", client)
+		c.Next()
+	}
+}
+
 func uploadFile(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
@@ -44,15 +53,40 @@ func uploadFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "File is empty or not a valid PDF"})
 		return
 	}
-	resume, err := extractResumeData(content)
+
+	clientInterface, exists := c.Get("groqClient")
+	if !exists {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Groq client not found"})
+		return
+	}
+
+	client, ok := clientInterface.(*groq.Client)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid Groq Client"})
+	}
+
+	systemPrompt := "You are a resume parser. You take text as input and return a JSON object with the following fields: email, phone_number, external_links, experience, projects, skills, interests, education. The education field should be an object with school_name, gpa, degrees, and courses as arrays of strings. The input text is: " + content
+
+	response, err := client.CreateChatCompletion(groq.CompletionCreateParams{
+		Model:          "deepseek-r1-distill-llama-70b",
+		ResponseFormat: groq.ResponseFormat{Type: "text"},
+		Messages: []groq.Message{
+			{
+				Role:    "user",
+				Content: systemPrompt,
+			},
+		},
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	fmt.Println("Response: ", response.Choices[0].Message.Content)
 	c.IndentedJSON(http.StatusOK, gin.H{
 		"status": "success",
 		"file":   file.Filename,
-		"data":   resume,
+		"data":   content,
 	})
 }
 
@@ -77,74 +111,12 @@ func readPDFContent(fileHeader *multipart.FileHeader) (string, error) {
 	return buf.String(), nil
 }
 
-func extractResumeData(content string) (*Resume, error) {
-	resume := &Resume{}
-	emailRegex := `[a-zA-Z0-9-_]{1,}@[a-zA-Z0-9-_]{1,}.[a-zA-Z]{1,}`
-	phoneRegex := `\d{3}-\d{3}-\d{4}`
-
-	if phoneMatch := regexp.MustCompile(phoneRegex).FindString(content); phoneMatch != "" {
-		resume.PhoneNumber = phoneMatch
-	}
-	if emailMatch := regexp.MustCompile(emailRegex).FindAllString(content, -1); len(emailMatch) > 0 {
-		resume.Email = emailMatch[0]
-	}
-	education := extractEducationData(content)
-	if len(education.SchoolName) > 0 {
-		resume.Education = education
-	}
-	return resume, nil
-}
-
-func extractEducationData(content string) Education {
-	education := Education{}
-	schoolRegex := `([A-Z][^\s,.]+[.]?\s[(]?)*(College|University|Institute|Law School|School of|Academy)[^,\d]*[?=,|\d]`
-	schoolMatches := regexp.MustCompile(schoolRegex).FindAllString(content, -1)
-	for _, match := range schoolMatches {
-		if len(match) > 2 && len(match) < 100 {
-			education.SchoolName = append(education.SchoolName, match)
-		}
-	}
-	gpa := extractGPA(content)
-	if len(gpa) > 0 {
-		education.GPA = gpa
-	}
-	return education
-}
-
-func extractGPA(content string) []string {
-	var gpas []string
-	seenGPAs := make(map[string]bool)
-
-	gpaPatterns := []string{
-		`(?i)gpa[\s:]*([0-4]\.[0-9]{1,2})\s*(?:/\s*4\.0)?`, 
-        `(?i)gpa[\s:]*([0-4]\.[0-9]{1,2})\s*/\s*([0-4]\.[0-9]{1,2})`, 
-        `(?i)cumulative\s+gpa[\s:]*([0-4]\.[0-9]{1,2})`,     
-        `(?i)overall\s+gpa[\s:]*([0-4]\.[0-9]{1,2})`,                
-	}
-	for _, pattern := range gpaPatterns {
-		re := regexp.MustCompile(pattern)
-		matches := re.FindAllStringSubmatch(content, -1)
-		for _, match := range matches {
-			if len(match) > 1 {
-				gpa := strings.TrimSpace(match[1])
-				if !seenGPAs[gpa] && isValidGPA(gpa) {
-					gpas = append(gpas, gpa)
-					seenGPAs[gpa] = true
-				}
-			}
-		}
-	}
-	return gpas
-}
-
-func isValidGPA(gpa string) bool {
-	if len(gpa) < 2 || len(gpa) > 4 {
-		return false
-	}
-	return true
-}
 func main() {
+	godotenv.Load()
 	router := gin.Default()
+	client := groq.NewClient(groq.WithAPIKey(os.Getenv("GROQ_API_KEY")))
+
+	router.Use(GroqMiddleware(client))
 	router.POST("/upload", uploadFile)
 
 	router.Run("localhost:8080")
