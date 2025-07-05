@@ -15,10 +15,11 @@ import (
 )
 
 type Education struct {
-	SchoolName interface{} `json:"school_name,omitempty"`
-	GPA        interface{} `json:"gpa,omitempty"`
-	Degrees    interface{} `json:"degrees,omitempty"`
-	Courses    interface{} `json:"courses,omitempty"`
+	SchoolName   interface{} `json:"school_name,omitempty"`
+	GPA          interface{} `json:"gpa,omitempty"`
+	Degrees      interface{} `json:"degrees,omitempty"`
+	Courses      interface{} `json:"courses,omitempty"`
+	Achievements interface{} `json:"achievements,omitempty"`
 }
 
 type Resume struct {
@@ -40,7 +41,7 @@ func GroqMiddleware(client *groq.Client) gin.HandlerFunc {
 	}
 }
 
-func uploadFile(c *gin.Context) {
+func analyze(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -68,7 +69,7 @@ func uploadFile(c *gin.Context) {
 		return
 	}
 
-	systemPrompt := `Parse this resume and return ONLY a JSON object. Use arrays for: external_links, experience, projects, skills, interests, publications. For education use: school_name (string), gpa (string), degrees (array), courses (array). Return only JSON, no explanations. Resume: ` + content
+	systemPrompt := `Parse this resume and return ONLY a JSON object. Use arrays for: external_links, experience, projects, skills, interests, publications. For education use: school_name (string), gpa (string), degrees (array), courses (array), achievements (array). Return only JSON, no explanations. Resume: ` + content
 
 	response, err := client.CreateChatCompletion(groq.CompletionCreateParams{
 		Model:          "deepseek-r1-distill-llama-70b",
@@ -81,7 +82,7 @@ func uploadFile(c *gin.Context) {
 		},
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"GROQ error": err.Error()})
 		return
 	}
 	systemResponse := response.Choices[0].Message.Content
@@ -91,10 +92,17 @@ func uploadFile(c *gin.Context) {
 		return
 	}
 
+	jobDesc := c.PostForm("job_description")
+	if jobDesc == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Job Description is required"})
+		return
+	}
+
 	c.IndentedJSON(http.StatusOK, gin.H{
 		"status": "success",
 		"file":   file.Filename,
 		"resume": resume,
+		"job_description": jobDesc,
 	})
 }
 
@@ -131,12 +139,12 @@ func readPDFContent(fileHeader *multipart.FileHeader) (string, error) {
 }
 
 func main() {
-	godotenv.Load()
+	godotenv.Load(".env.local")
 	router := gin.Default()
 	client := groq.NewClient(groq.WithAPIKey(os.Getenv("GROQ_API_KEY")))
 
 	router.Use(GroqMiddleware(client))
-	router.POST("/upload", uploadFile)
+	router.POST("/analyze", analyze)
 
-	router.Run("0.0.0.0:8080")
+	router.Run()
 }
